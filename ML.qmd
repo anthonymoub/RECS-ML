@@ -1,0 +1,1241 @@
+
+---
+title: "RECS ML"
+author:
+  - name: Anthony Moubarak
+    affiliations:
+      - name: MDI - EIDC        
+date: "`r Sys.Date()`"
+format:
+    html:
+        toc: true
+        embed-resources: true
+        theme: default
+        code-copy: true
+        code-fold: true
+        code-line-numbers: true
+        number-sections: true
+        highlight-style: github
+        page-layout: full
+      
+---
+
+# Abstract
+
+Below is a structure of the project/Notebook:
+
+* Introduction
+* EDA
+* Feature Selection:
+    * LASSO Regression
+    * Random Forest Best Feature Selector 
+
+* Machine Learning:
+    * Subset 1 (LASSO subset):
+        * OLS Regression
+        * Random Forest Regressor
+        * XGBoost Regressor
+
+    * Subset 2 (Random Forest subset):
+        * OLS Regression
+        * Random Forest Regressor
+        * XGBoost Regressor
+
+    * PCA:
+        * Models
+    * Hyperparameter Tuning
+
+# Introduction
+
+The United States' energy landscape has undergone significant changes over the years, driven by advancements in technology and evolving consumer habits. Amidst these shifts, understanding and predicting household energy consumption become crucial for policymakers and energy providers to promote sustainability and optimize resource allocation.
+
+In this project, we delve into the vast repository of data from the U.S. Energy Information Administration (EIA) Residential Energy Consumption Survey (RECS). By leveraging the power of machine learning and regression-based models, we aim to develop accurate predictors for annual energy consumption in households across the nation.
+
+RECS, conducted since 1978, captures detailed information on homes' characteristics, appliance usage, number of residents, and demographic insights. 
+
+
+```{python echo = FALSE}
+from sklearn.model_selection import train_test_split, cross_val_score, RandomizedSearchCV
+from xgboost import XGBRegressor
+from sklearn.decomposition import PCA
+import xgboost as xgb
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import r2_score
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.linear_model import LassoCV
+import numpy as np
+from scipy import stats
+import random
+from wordcloud import WordCloud, STOPWORDS
+from sklearn.preprocessing import StandardScaler
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+
+df = pd.read_csv("Data/marged_recs.csv")
+df
+
+```
+
+The dataset at hand presents an inherent challenge, as it comprises an extensive collection of over 800 variables. Consequently, before delving into any modeling endeavors, a critical phase of feature selection and dimensionality reduction becomes imperative. 
+
+For a detailed breakdown and explanation of every variable, visit https://view.officeapps.live.com/op/view.aspx?src=https%3A%2F%2Fwww.eia.gov%2Fconsumption%2Fresidential%2Fdata%2F2020%2Fxls%2FRECS%25202020%2520Codebook%2520for%2520Public%2520File%2520-%2520v4.xlsx&wdOrigin=BROWSELINK
+
+```{python}
+# Assuming 'df' is your DataFrame
+# Get the data types of each column in the DataFrame
+data_types = df.dtypes
+
+# Initialize empty lists to store numeric and categorical column names
+numeric_columns = []
+categorical_columns = []
+
+# Iterate through each column and categorize them
+for column_name, data_type in data_types.iteritems():
+    if pd.api.types.is_numeric_dtype(data_type):
+        numeric_columns.append(column_name)
+    else:
+        categorical_columns.append(column_name)
+
+# Print the result
+print("Numeric columns:", numeric_columns)
+print("Categorical columns:", categorical_columns)
+
+```
+
+There only are 7 categorical columns out of the 800, so one hot encoding (or other encoding) on categorical variables will not cause any significant problems.
+
+# EDA
+
+### Distribution of target variable
+
+We start by analyzing the distribution of the target variable KWH.
+
+
+```{python}
+
+sns.kdeplot(data=df['KWH'], shade=True)
+
+# Optionally, you can adjust the plot settings for better visualization
+plt.title('Density Plot of KWH')
+plt.xlabel('KWH')
+plt.ylabel('Density')
+
+# Show the plot
+plt.show()
+```
+
+The KWH is not normally distributed, as it has a long tail on the right (highly skewed positively), which is why applying a log transformation would make sense.
+
+```{python}
+df['log_KWH'] = np.log(df['KWH'])
+
+numeric_columns.append('log_KWH')
+```
+
+
+```{python}
+# Assuming 'KWH' is the column name in the DataFrame 'df'
+sns.kdeplot(data=df['log_KWH'], shade=True)
+
+# Optionally, you can adjust the plot settings for better visualization
+plt.title('Density Plot of KWH')
+plt.xlabel('KWH')
+plt.ylabel('Density')
+
+# Show the plot
+plt.show()
+```
+
+The KWH is not normally distributed, as it has a long tail on the right (positive skew), which is why applying a log transformation would make sense.
+
+### Correlations between numeric variables and KWH
+
+Keeping numeric columns only
+
+```{python}
+numeric_df = df[numeric_columns]
+
+numeric_df = numeric_df.drop(columns=['DOEID'])
+
+numeric_df.head()
+```
+
+```{python}
+# Compute the correlation between 'KWH' and all other columns
+correlations = numeric_df.corr()['log_KWH']
+
+# Filter the columns with correlation >= 0.4
+columns_with_05_corr = correlations[correlations.abs() >= 0.5].index.tolist()
+
+# Print the column names with correlation >= 0.4
+print("Columns with correlation >= 0.5 with 'KWH':")
+print(columns_with_05_corr)
+```
+
+
+
+```{python}
+# Compute the correlation between 'KWH' and all other columns
+correlations = numeric_df.corr()['log_KWH']
+
+# Filter the columns with correlation >= 0.4
+columns_with_05_corr = correlations[correlations.abs() >= 0.5].index.tolist()
+
+# Print the column names with correlation >= 0.4
+print("Columns with correlation >= 0.5 with 'KWH':")
+print(columns_with_05_corr)
+```
+
+The correlation heatmap above highlights which variables are the most correlated with log_KWH (target variable). The exact definition of each variable can be found below:
+
+* BTUEL: Total electricity use, in thousand Btu (british thermal units).
+* DOLLAREL: Total electricity cost, in dollars, 2020.
+* KWHCOL: Calibrated electricity usage for space cooling.
+* KWHAHUCOL: Calibrated electricity usage for furnace fans used for cooling.
+* KWHOTH: Calibrated electricity usage for end uses other than space heating.
+* BTUELCOL: Calibrated electricity usage for space cooling (central air conditioning, individual units, and evaporative coolers), in btu.
+* BTUELAHUCOL: Calibrated electricity usage for furnace fans used for cooling, in thousand Btu.
+* BTUELOTH: Calibrated electricity usage for end uses other than space heating, space cooling, water heating, and refrigerators, in thousand Btu.
+* DOLELOTH: Calibrated electricity cost for end uses other than space heating, space cooling, water heating, and refrigerators.
+* TOTALDOL: Total cost for space heating including electricity, natural gas, propane, and fuel oil, in dollars, 2020.
+
+Most of the variables above are directly related to overall energy usage or are even the same metric but in a different unit (BTUEL for example), which is why relying solely on correlations to build a model will lead to inaccurate and/or skewed results.
+
+### Categorical Variable Analysis
+
+
+
+```{python}
+
+# List of categorical columns to plot
+categorical_columns = ['BA_climate', 'IECC_climate_code',
+                       'UATYP10', 'REGIONC', 'DIVISION', 'state_postal', 'state_name']
+
+# Create a 3x2 grid of subplots with an additional plot in the 4th row
+fig, axes = plt.subplots(4, 2, figsize=(15, 20))
+
+# Loop through each categorical column and create box plots
+for i, column in enumerate(categorical_columns):
+    row = i // 2
+    col = i % 2
+    sns.boxplot(x=column, y='log_KWH', data=df,
+                ax=axes[row, col], palette='Blues')
+    axes[row, col].set_title(f'Box Plot of log_KWH by {column}')
+    axes[row, col].set_xlabel(column)
+    axes[row, col].set_ylabel('log_KWH')
+    axes[row, col].tick_params(axis='x', rotation=45)
+
+# Remove the empty subplots in the 4th row
+fig.delaxes(axes[3, 0])
+fig.delaxes(axes[3, 1])
+
+# Adjust layout to avoid overlapping titles and labels
+fig.tight_layout()
+
+plt.show()
+
+
+```
+
+
+```{python}
+# Extract the columns from the DataFrame
+df['YEARMADERANGE'] = df['YEARMADERANGE'].astype('int')
+year_made_range = df['YEARMADERANGE']
+kwh = df['KWH']
+
+# Create a scatter plot
+# alpha controls the transparency of the points
+plt.scatter(year_made_range, kwh, alpha=0.5)
+plt.xlabel('Year Made Range')
+plt.ylabel('KWH')
+plt.title('Scatter Plot of Year Made Range vs. KWH')
+
+# Set the desired order for xticks
+plt.xticks([1, 2, 3, 4, 5, 6, 7, 8, 9])
+
+# Show the plot
+plt.show()
+```
+
+
+```{python}
+plt.figure(figsize=(24, 6))
+ax_age = sns.barplot(x="HHAGE", y="log_KWH", data=df, palette='Blues')
+ax_age.set_title(
+    "Energy Consumption Based on Age of Household Member", fontsize=20)
+```
+
+
+```{python}
+plt.figure(figsize=(14, 6))
+# I will explore the distribution of Roof type and roof type by log_KWH
+plt.subplot(121)
+ax_roof = sns.countplot(x='ROOFTYPE', data=df, palette='Blues')
+ax_roof.set_title("Distribution of Roof Type", fontsize=15)
+
+
+plt.subplot(122)
+ax_roof = sns.boxplot(x="ROOFTYPE", y="log_KWH", data=df, palette='Blues')
+ax_roof.set_title("Roof type Energy Consumption", fontsize=15)
+
+
+plt.subplots_adjust(hspace=0.6, top=0.8)
+
+plt.show()
+```
+
+
+```{python}
+
+plt.figure(figsize=(14, 6))
+
+# I will explore the distribution of wall type and wall type by log_KWH
+plt.subplot(121)
+ax_oven = sns.countplot(x='OVENUSE', data=df, palette=list(
+    reversed(sns.color_palette("Blues"))))
+ax_oven.set_title("Distribution of Oven Use", fontsize=15)
+
+plt.subplot(122)
+ax_oven = sns.boxplot(x="OVENUSE", y="log_KWH", data=df,
+                      palette=list(reversed(sns.color_palette("Blues"))))
+ax_oven.set_title("Oven Use Energy Consumption", fontsize=15)
+
+plt.subplots_adjust(hspace=0.6, top=0.8)
+
+plt.show()
+
+```
+
+
+```{python}
+
+plt.figure(figsize=(14, 6))
+# I will explore the distribution of wall type and wall type by log_KWH
+plt.subplot(121)
+ax_bedroom = sns.countplot(x='BEDROOMS', data=df, palette=list(
+    reversed(sns.color_palette("Blues"))))
+ax_bedroom.set_title("Distribution of Number of Bedrooms", fontsize=15)
+
+
+plt.subplot(122)
+ax_bedroom = sns.boxplot(x="BEDROOMS", y="log_KWH", data=df, palette=list(
+    reversed(sns.color_palette("Blues"))))
+ax_bedroom.set_title("Number of Bathrooms Energy Consumption", fontsize=15)
+
+
+plt.subplots_adjust(hspace=0.6, top=0.8)
+
+plt.show()
+
+```
+
+# Feature Selection
+
+Since the dataset has around 800 predictor variables, feature selection is an essential step before doing any sort of modelling. The two methods used for feature selection are Random Forest Best Feature Selector and LASSO Regression.
+
+The Random Forest Best Feature selector leverages the strength of the Random Forest algorithm to identify the most influential predictors. By constructing multiple decision trees and considering the collective insights of each tree, this method efficiently assesses feature importance, enabling us to isolate the most significant variables that drive annual energy consumption in households. Its robustness to handle complex relationships and its ability to handle both numerical and categorical features make it an excellent approach for feature selection in high-dimensional datasets.
+
+Similarly, LASSO (Least Absolute Shrinkage and Selection Operator) Regression is a technique to identify the most relevant predictors. It applies L1 regularization, which introduces a penalty term that encourages some coefficients to precisely zero. This results in a sparse model, automatically selecting the most influential variables while discarding less impactful ones. LASSO's ability to simultaneously perform variable selection and regularization makes it an efficient and interpretable approach for high-dimensional datasets.
+
+
+
+```{python}
+
+categorical_columns = ['BA_climate', 'IECC_climate_code',
+                       'UATYP10', 'REGIONC', 'DIVISION', 'state_postal', 'state_name']
+
+df = df.drop(columns=['DOEID'])
+
+# Define the categorical columns to be one-hot encoded
+categorical_columns = ['BA_climate', 'IECC_climate_code',
+                       'UATYP10', 'REGIONC', 'DIVISION', 'state_postal', 'state_name']
+
+# Perform one-hot encoding
+df_encoded = pd.get_dummies(df, columns=categorical_columns)
+
+df_encoded.dropna(inplace=True)
+
+```
+
+Dropping some additional useless columns:
+
+```{python}
+
+modeled_variables = pd.read_csv("Data/end_use_model.csv")
+useless_columns = modeled_variables.columns.values[1:].tolist()
+main_array = useless_columns
+# Convert the list of columns to drop and the DataFrame columns into sets
+useless_columns_set = set(main_array)
+df_columns_set = set(df_encoded.columns)
+
+# Get the intersection of the set of columns in the DataFrame and the set of columns to drop
+columns_to_drop = list(useless_columns_set.intersection(df_columns_set))
+
+# Drop only the columns that are present in both DataFrame and the list
+df_encoded.drop(columns=columns_to_drop, inplace=True)
+
+columns_to_drop = [
+    col for col in df_encoded.columns if col.startswith('NWEIGHT')]
+df_encoded.drop(columns=columns_to_drop, inplace=True)
+```
+
+Next, a LASSO regression model should be ran to get a subset of features that lead to a good result.
+
+```{python}
+
+# Separate the target variable 'log_KWH' from the predictors
+X = df_encoded.drop(columns=['log_KWH', 'KWH'])
+y = df_encoded['log_KWH']
+
+# Perform LASSO regression with cross-validation to find the best alpha
+lasso_model = LassoCV(cv=5)
+lasso_model.fit(X, y)
+
+# Get the best alpha and selected features
+best_alpha = lasso_model.alpha_
+selected_features = X.columns[lasso_model.coef_ != 0]
+
+# Subset the DataFrame with the selected features
+df_best_features = df_encoded[selected_features]
+
+# Print the best alpha and selected features
+print("Best alpha:", best_alpha)
+print("Selected features:", selected_features)
+
+
+```
+
+
+
+
+```{python}
+# Get the coefficients from the LASSO regression model
+lasso_coefficients = pd.Series(lasso_model.coef_, index=X.columns)
+
+# Filter out non-zero coefficients
+selected_features_non_zero = lasso_coefficients[lasso_coefficients != 0]
+
+
+# Sort the selected_features_non_zero Series in descending order of absolute values
+selected_features_ranked = selected_features_non_zero.abs().sort_values(ascending=False)
+
+# Print the ranked features/variables and their corresponding impact on log_KWH
+print("Ranked Impact on log_KWH:")
+print(selected_features_ranked)
+
+```
+
+
+```{python}
+
+# Assuming df_encoded is your DataFrame
+X = df_encoded.drop(columns=['log_KWH', 'KWH'])
+y = df_encoded['log_KWH']
+
+# Initialize and train the Random Forest Regressor model
+# You can adjust other hyperparameters as needed
+rf_model = RandomForestRegressor(random_state=42)
+rf_model.fit(X, y)
+
+```
+
+```{python}
+# Get the feature importances from the trained Random Forest model
+feature_importances = rf_model.feature_importances_
+
+# Create a DataFrame to store the feature importances along with their corresponding column names
+feature_importances_df = pd.DataFrame(
+    {'Feature': X.columns, 'Importance': feature_importances})
+
+# Sort the DataFrame by importance in descending order to see the most important features
+feature_importances_df.sort_values(
+    by='Importance', ascending=False, inplace=True)
+
+feature_importances_df['Feature'].reset_index()['Feature'][0:15].values
+
+```
+
+Each method gives a different subset of features (with some overlap). To summarize:
+
+LASSO Subset: (definitions to be added)
+
+* HHAGE
+* TVONWE1
+* TVONWE2
+* TEMPGONE
+* TEMPHOMEAC
+* STATE_FIPS
+* SQFTEST
+* TOTSQFT_EN
+* TOTHSQFT
+* TOTCSQFT
+* HDD65
+* CDD65
+* HDD30YR_PUB
+* CDD30YR_PUB
+* EQUIPAUXTYPE
+* AMTMICRO
+* OUTGRILLFUEL
+* WASHLOAD
+* DRYRUSE
+
+Random Forest Subset: (definitions to be added)
+
+* TYPEHUQ
+* FUELHEAT
+* TOTCSQFT
+* BEDROOMS
+* NHSLDMEM
+* DRYRUSE
+* ELWATER
+* SQFTEST
+* CDD30YR_PUB
+* MONPOOL
+* TOTHSQFT
+* DRYRFUEL
+* WASHLOAD
+* TOTSQFT_EN
+* REGIONC_SOUTH
+
+Since each method gives a different subset, all models developed will be used on both subsets and results will be compared.
+
+# Machine Learning 
+
+The main objective of this project is to predict the annual energy expenditure of households using subsets of features obtained from LASSO and Random Forest feature selection techniques. The primary metric for evaluating the performance of the models is R-squared.
+
+To achieve this, the same models (OLS, Random Forest, and XGBoost) will be fitted separately on each subset of features. The results from both subsets will be compared to determine which model performs better in predicting the annual energy expenditure.
+
+Note: All models will be fit using 5 fold cross validation.
+
+## Part One: Subset 1 (from LASSO)
+### Model 1: Ordinary Least Squared (OLS) Regression
+
+```{python}
+
+
+# Assuming df_encoded contains the DataFrame with all the required columns
+df_model1 = df_encoded[['HHAGE', 'TVONWE1', 'TVONWE2', 'TEMPGONE', 'TEMPHOMEAC', 'STATE_FIPS',
+                        'SQFTEST', 'TOTSQFT_EN', 'TOTHSQFT', 'TOTCSQFT', 'HDD65', 'CDD65',
+                        'HDD30YR_PUB', 'CDD30YR_PUB', 'EQUIPAUXTYPE', 'AMTMICRO',
+                        'OUTGRILLFUEL', 'WASHLOAD', 'DRYRUSE', 'log_KWH']]
+
+# Separate the predictor variables (X) and the target variable (y)
+X = df_model1.drop(columns=['log_KWH'])
+y = df_model1['log_KWH']
+
+# Normalize the predictor variables
+scaler = StandardScaler()
+X_normalized = scaler.fit_transform(X)
+
+# Split the data into training and testing sets (80% training, 20% testing)
+X_train, X_test, y_train, y_test = train_test_split(
+    X_normalized, y, test_size=0.2, random_state=42)
+
+# Train the linear regression model
+reg_model = LinearRegression()
+reg_model.fit(X_train, y_train)
+
+# Make predictions on the test data
+y_pred = reg_model.predict(X_test)
+
+# Calculate the R-squared value
+r_squared = r2_score(y_test, y_pred)
+n = X_test.shape[0]  # Number of samples in the test set
+p = X_test.shape[1]  # Number of predictors (features)
+adjusted_r_squared = 1 - (1 - r_squared) * ((n - 1) / (n - p - 1))
+
+print(f'R-squared (Test Set): {r_squared:.4f}')
+print(f'Adjusted R-squared (Test Set): {adjusted_r_squared:.4f}')
+
+# Perform 5-fold cross-validation and calculate R-squared for each fold
+cv_scores = cross_val_score(reg_model, X_normalized, y, cv=5, scoring='r2')
+mean_r_squared_cv = np.mean(cv_scores)
+
+# Calculate the adjusted R-squared for cross-validation
+adjusted_r_squared_cv = 1 - (1 - mean_r_squared_cv) * ((n - 1) / (n - p - 1))
+
+print("\nR-squared (5-fold Cross-validation):")
+for i, score in enumerate(cv_scores, start=1):
+    print(f"Fold {i}: {score:.4f}")
+
+print(f"\nMean R-squared: {mean_r_squared_cv:.4f}")
+print(f"Mean Adjusted R-squared: {adjusted_r_squared_cv:.4f}")
+
+
+```
+
+### Model 2: Random Forest Regression
+
+```{python}
+
+# Assuming df_encoded contains the DataFrame with all the required columns
+df_model1 = df_encoded[['HHAGE', 'TVONWE1', 'TVONWE2', 'TEMPGONE', 'TEMPHOMEAC', 'STATE_FIPS',
+                        'SQFTEST', 'TOTSQFT_EN', 'TOTHSQFT', 'TOTCSQFT', 'HDD65', 'CDD65',
+                        'HDD30YR_PUB', 'CDD30YR_PUB', 'EQUIPAUXTYPE', 'AMTMICRO',
+                        'OUTGRILLFUEL', 'WASHLOAD', 'DRYRUSE', 'log_KWH']]
+
+# Separate the predictor variables (X) and the target variable (y)
+X = df_model1.drop(columns=['log_KWH'])
+y = df_model1['log_KWH']
+
+# Normalize the predictor variables
+scaler = StandardScaler()
+X_normalized = scaler.fit_transform(X)
+
+# Split the data into training and testing sets (80% training, 20% testing)
+X_train, X_test, y_train, y_test = train_test_split(
+    X_normalized, y, test_size=0.2, random_state=42)
+
+# Train the Random Forest Regressor model
+rf_model = RandomForestRegressor(random_state=42)
+rf_model.fit(X_train, y_train)
+
+# Make predictions on the test data
+y_pred_rf = rf_model.predict(X_test)
+
+# Calculate the R-squared value for Random Forest Regressor
+r_squared_rf = r2_score(y_test, y_pred_rf)
+n = X_test.shape[0]  # Number of samples in the test set
+p = X_test.shape[1]  # Number of predictors (features)
+adjusted_r_squared_rf = 1 - (1 - r_squared_rf) * ((n - 1) / (n - p - 1))
+
+print(f'R-squared (Test Set - Random Forest): {r_squared_rf:.4f}')
+print(
+    f'Adjusted R-squared (Test Set - Random Forest): {adjusted_r_squared_rf:.4f}')
+
+# Perform 5-fold cross-validation and calculate R-squared for each fold
+cv_scores_rf = cross_val_score(rf_model, X_normalized, y, cv=5, scoring='r2')
+mean_r_squared_cv_rf = np.mean(cv_scores_rf)
+
+# Calculate the adjusted R-squared for cross-validation
+adjusted_r_squared_cv_rf = 1 - \
+    (1 - mean_r_squared_cv_rf) * ((n - 1) / (n - p - 1))
+
+print("\nR-squared (5-fold Cross-validation - Random Forest):")
+for i, score in enumerate(cv_scores_rf, start=1):
+    print(f"Fold {i}: {score:.4f}")
+
+print(f"\nMean R-squared - Random Forest: {mean_r_squared_cv_rf:.4f}")
+print(
+    f"Mean Adjusted R-squared - Random Forest: {adjusted_r_squared_cv_rf:.4f}")
+
+
+```
+
+### Model 3: XGBoost Regressor
+
+```{python}
+
+
+# Assuming df_encoded contains the DataFrame with all the required columns
+df_model1 = df_encoded[['HHAGE', 'TVONWE1', 'TVONWE2', 'TEMPGONE', 'TEMPHOMEAC', 'STATE_FIPS',
+                        'SQFTEST', 'TOTSQFT_EN', 'TOTHSQFT', 'TOTCSQFT', 'HDD65', 'CDD65',
+                        'HDD30YR_PUB', 'CDD30YR_PUB', 'EQUIPAUXTYPE', 'AMTMICRO',
+                        'OUTGRILLFUEL', 'WASHLOAD', 'DRYRUSE', 'log_KWH']]
+
+# Separate the predictor variables (X) and the target variable (y)
+X = df_model1.drop(columns=['log_KWH'])
+y = df_model1['log_KWH']
+
+# Normalize the predictor variables
+scaler = StandardScaler()
+X_normalized = scaler.fit_transform(X)
+
+# Split the data into training and testing sets (80% training, 20% testing)
+X_train, X_test, y_train, y_test = train_test_split(
+    X_normalized, y, test_size=0.2, random_state=42)
+
+# Train the XGBoost Regressor model
+xgb_model = xgb.XGBRegressor(random_state=42)
+xgb_model.fit(X_train, y_train)
+
+# Make predictions on the test data
+y_pred_xgb = xgb_model.predict(X_test)
+
+# Calculate the R-squared value for XGBoost Regressor
+r_squared_xgb = r2_score(y_test, y_pred_xgb)
+n = X_test.shape[0]  # Number of samples in the test set
+p = X_test.shape[1]  # Number of predictors (features)
+adjusted_r_squared_xgb = 1 - (1 - r_squared_xgb) * ((n - 1) / (n - p - 1))
+
+print(f'R-squared (Test Set - XGBoost): {r_squared_xgb:.4f}')
+print(f'Adjusted R-squared (Test Set - XGBoost): {adjusted_r_squared_xgb:.4f}')
+
+# Perform 5-fold cross-validation and calculate R-squared for each fold
+cv_scores_xgb = cross_val_score(xgb_model, X_normalized, y, cv=5, scoring='r2')
+mean_r_squared_cv_xgb = np.mean(cv_scores_xgb)
+
+# Calculate the adjusted R-squared for cross-validation
+adjusted_r_squared_cv_xgb = 1 - \
+    (1 - mean_r_squared_cv_xgb) * ((n - 1) / (n - p - 1))
+
+print("\nR-squared (5-fold Cross-validation - XGBoost):")
+for i, score in enumerate(cv_scores_xgb, start=1):
+    print(f"Fold {i}: {score:.4f}")
+
+print(f"\nMean R-squared - XGBoost: {mean_r_squared_cv_xgb:.4f}")
+print(f"Mean Adjusted R-squared - XGBoost: {adjusted_r_squared_cv_xgb:.4f}")
+
+
+```
+
+## Part Two: Subset 2 (from RF Regressor)
+### Model 1: Ordinary Least Squared (OLS) Regression
+
+```{python}
+
+
+df_model2 = df_encoded[['TYPEHUQ', 'FUELHEAT', 'TOTCSQFT', 'BEDROOMS', 'NHSLDMEM',
+                       'DRYRUSE', 'ELWATER', 'SQFTEST', 'CDD30YR_PUB', 'MONPOOL',
+                        'TOTHSQFT', 'DRYRFUEL', 'WASHLOAD', 'TOTSQFT_EN', 'REGIONC_SOUTH', 'log_KWH']]
+
+# Separate the predictor variables (X) and the target variable (y)
+X = df_model2.drop(columns=['log_KWH'])
+y = df_model2['log_KWH']
+
+# Normalize the predictor variables
+scaler = StandardScaler()
+X_normalized = scaler.fit_transform(X)
+
+# Split the data into training and testing sets (80% training, 20% testing)
+X_train, X_test, y_train, y_test = train_test_split(
+    X_normalized, y, test_size=0.2, random_state=42)
+
+# Train the linear regression model
+reg_model = LinearRegression()
+reg_model.fit(X_train, y_train)
+
+# Make predictions on the test data
+y_pred = reg_model.predict(X_test)
+
+# Calculate the R-squared value
+r_squared = r2_score(y_test, y_pred)
+n = X_test.shape[0]  # Number of samples in the test set
+p = X_test.shape[1]  # Number of predictors (features)
+adjusted_r_squared = 1 - (1 - r_squared) * ((n - 1) / (n - p - 1))
+
+print(f'R-squared: {r_squared:.4f}')
+print(f'Adjusted R-squared: {adjusted_r_squared:.4f}')
+
+# Perform 5-fold cross-validation and calculate R-squared for each fold
+cv_scores = cross_val_score(reg_model, X_normalized, y, cv=5, scoring='r2')
+mean_r_squared_cv = np.mean(cv_scores)
+
+# Calculate the adjusted R-squared for cross-validation
+adjusted_r_squared_cv = 1 - (1 - mean_r_squared_cv) * ((n - 1) / (n - p - 1))
+
+print("\nR-squared (5-fold Cross-validation):")
+for i, score in enumerate(cv_scores, start=1):
+    print(f"Fold {i}: {score:.4f}")
+
+print(f"\nMean R-squared: {mean_r_squared_cv:.4f}")
+print(f"Mean Adjusted R-squared: {adjusted_r_squared_cv:.4f}")
+
+```
+
+### Model 2: Random Forest Regression
+
+```{python}
+
+# Assuming df_encoded contains the DataFrame with all the required columns
+df_model2 = df_encoded[['TYPEHUQ', 'FUELHEAT', 'TOTCSQFT', 'BEDROOMS', 'NHSLDMEM',
+                       'DRYRUSE', 'ELWATER', 'SQFTEST', 'CDD30YR_PUB', 'MONPOOL',
+                        'TOTHSQFT', 'DRYRFUEL', 'WASHLOAD', 'TOTSQFT_EN', 'REGIONC_SOUTH', 'log_KWH']]
+
+# Separate the predictor variables (X) and the target variable (y)
+X = df_model2.drop(columns=['log_KWH'])
+y = df_model2['log_KWH']
+
+# Normalize the predictor variables
+scaler = StandardScaler()
+X_normalized = scaler.fit_transform(X)
+
+# Split the data into training and testing sets (80% training, 20% testing)
+X_train, X_test, y_train, y_test = train_test_split(
+    X_normalized, y, test_size=0.2, random_state=42)
+
+# Train the Random Forest Regressor model
+rf_model = RandomForestRegressor(random_state=42)
+rf_model.fit(X_train, y_train)
+
+# Make predictions on the test data
+y_pred_rf = rf_model.predict(X_test)
+
+# Calculate the R-squared value for Random Forest Regressor
+r_squared_rf = r2_score(y_test, y_pred_rf)
+n = X_test.shape[0]  # Number of samples in the test set
+p = X_test.shape[1]  # Number of predictors (features)
+adjusted_r_squared_rf = 1 - (1 - r_squared_rf) * ((n - 1) / (n - p - 1))
+
+print(f'R-squared (Test Set - Random Forest): {r_squared_rf:.4f}')
+print(
+    f'Adjusted R-squared (Test Set - Random Forest): {adjusted_r_squared_rf:.4f}')
+
+# Perform 5-fold cross-validation and calculate R-squared for each fold
+cv_scores_rf = cross_val_score(rf_model, X_normalized, y, cv=5, scoring='r2')
+mean_r_squared_cv_rf = np.mean(cv_scores_rf)
+
+# Calculate the adjusted R-squared for cross-validation
+adjusted_r_squared_cv_rf = 1 - \
+    (1 - mean_r_squared_cv_rf) * ((n - 1) / (n - p - 1))
+
+print("\nR-squared (5-fold Cross-validation - Random Forest):")
+for i, score in enumerate(cv_scores_rf, start=1):
+    print(f"Fold {i}: {score:.4f}")
+
+print(f"\nMean R-squared - Random Forest: {mean_r_squared_cv_rf:.4f}")
+print(
+    f"Mean Adjusted R-squared - Random Forest: {adjusted_r_squared_cv_rf:.4f}")
+
+
+```
+
+### Model 3: Gradient Boosting Regression
+
+
+```{python}
+
+# Assuming df_encoded contains the DataFrame with all the required columns
+df_model2 = df_encoded[['TYPEHUQ', 'FUELHEAT', 'TOTCSQFT', 'BEDROOMS', 'NHSLDMEM',
+                       'DRYRUSE', 'ELWATER', 'SQFTEST', 'CDD30YR_PUB', 'MONPOOL',
+                        'TOTHSQFT', 'DRYRFUEL', 'WASHLOAD', 'TOTSQFT_EN', 'REGIONC_SOUTH', 'log_KWH']]
+
+# Separate the predictor variables (X) and the target variable (y)
+X = df_model2.drop(columns=['log_KWH'])
+y = df_model2['log_KWH']
+
+# Normalize the predictor variables
+scaler = StandardScaler()
+X_normalized = scaler.fit_transform(X)
+
+# Split the data into training and testing sets (80% training, 20% testing)
+X_train, X_test, y_train, y_test = train_test_split(
+    X_normalized, y, test_size=0.2, random_state=42)
+
+# Train the XGBoost Regressor model
+xgb_model = xgb.XGBRegressor(random_state=42)
+xgb_model.fit(X_train, y_train)
+
+# Make predictions on the test data
+y_pred_xgb = xgb_model.predict(X_test)
+
+# Calculate the R-squared value for XGBoost Regressor
+r_squared_xgb = r2_score(y_test, y_pred_xgb)
+n = X_test.shape[0]  # Number of samples in the test set
+p = X_test.shape[1]  # Number of predictors (features)
+adjusted_r_squared_xgb = 1 - (1 - r_squared_xgb) * ((n - 1) / (n - p - 1))
+
+print(f'R-squared (Test Set - XGBoost): {r_squared_xgb:.4f}')
+print(f'Adjusted R-squared (Test Set - XGBoost): {adjusted_r_squared_xgb:.4f}')
+
+# Perform 5-fold cross-validation and calculate R-squared for each fold
+cv_scores_xgb = cross_val_score(xgb_model, X_normalized, y, cv=5, scoring='r2')
+mean_r_squared_cv_xgb = np.mean(cv_scores_xgb)
+
+# Calculate the adjusted R-squared for cross-validation
+adjusted_r_squared_cv_xgb = 1 - \
+    (1 - mean_r_squared_cv_xgb) * ((n - 1) / (n - p - 1))
+
+print("\nR-squared (5-fold Cross-validation - XGBoost):")
+for i, score in enumerate(cv_scores_xgb, start=1):
+    print(f"Fold {i}: {score:.4f}")
+
+print(f"\nMean R-squared - XGBoost: {mean_r_squared_cv_xgb:.4f}")
+print(f"Mean Adjusted R-squared - XGBoost: {adjusted_r_squared_cv_xgb:.4f}")
+
+```
+
+### Results 
+
+```{python}
+
+results1 = pd.DataFrame(
+    {'Model': ['OLS', 'Random Forest', 'XGBoost', 'OLS', 'Random Forest', 'XGBoost'],
+     'Features': ['Subset 1', 'Subset 1', 'Subset 1', 'Subset 2', 'Subset 2', 'Subset 2'],
+     'Cross Validated R-squared': [0.32, 0.36, 0.35, 0.47, 0.49, 0.48]}
+)
+
+results1
+```
+
+For now, it is obvious that Subset 2 (random forest subset) leads to better model performances.
+
+
+# PCA
+
+Another effective approach to address the challenge of high dimensionality in the data, with over 800 variables, is performing Principal Component Analysis (PCA) before modeling. PCA offers a powerful solution for dimensionality reduction by transforming the original features into a new set of uncorrelated principal components.
+
+By applying PCA, we can capture the most significant patterns and variations in the data while retaining essential information. This not only reduces computational complexity but also minimizes the risk of multicollinearity among predictors, ensuring that the principal components are orthogonal to each other.
+
+This section focuses on using PCA then modelling and compare the results with the results from the modelling done in the previous section.
+
+```{python}
+
+
+df = pd.read_csv("Data/marged_recs.csv")
+df = df.drop(columns=['ELXBTU', 'ZTYPEHUQ', 'MEDICALDEV',
+             'EVCHRGHOME', 'ELOTHER', 'USEEL'])
+df.head()
+```
+
+```{python}
+
+# Assuming 'df' is your DataFrame
+# Get the data types of each column in the DataFrame
+data_types = df.dtypes
+
+# Initialize empty lists to store numeric and categorical column names
+numeric_columns = []
+categorical_columns = []
+
+# Iterate through each column and categorize them
+for column_name, data_type in data_types.iteritems():
+    if pd.api.types.is_numeric_dtype(data_type):
+        numeric_columns.append(column_name)
+    else:
+        categorical_columns.append(column_name)
+
+```
+
+
+```{python}
+
+df['log_KWH'] = np.log(df['KWH'])
+
+numeric_columns.append('log_KWH')
+```
+
+```{python}
+numeric_df = df[numeric_columns]
+
+numeric_df = numeric_df.drop(columns=['DOEID'])
+
+numeric_df.head()
+```
+
+```{python}
+X = numeric_df.drop(columns=['log_KWH'])
+y = numeric_df.loc[X.index, 'log_KWH']
+
+```
+
+PCA for 10 principle components
+
+```{python}
+
+
+# Separate the target variable 'log_KWH'
+X = numeric_df.drop(columns=['log_KWH']).dropna()
+y = numeric_df.loc[X.index, 'log_KWH']
+
+# Perform standardization
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Apply PCA with the desired number of components (e.g., 10)
+n_components = 10  # You can choose the number of components here
+pca = PCA(n_components=n_components)
+X_pca = pca.fit_transform(X_scaled)
+
+```
+
+Weights of components:
+
+```{python}
+X_pca[0]
+```
+
+Loadings of first component:
+
+```{python}
+# Get the loadings of the first principal component
+loadings_first_component = pca.components_[0]
+
+# Match the loadings with the original feature names
+loadings_df = pd.DataFrame(
+    {'Feature': X.columns, 'Loading': loadings_first_component})
+loadings_df = loadings_df.sort_values(by='Loading', ascending=False)
+
+# Print the loadings for the first principal component
+print(loadings_df)
+```
+
+Next, the same models used previously will be fit on the PCA data.
+
+### OLS Regression
+```{python}
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(
+    X_pca, y, test_size=0.2, random_state=42)
+
+# Create a linear regression model
+reg_model = LinearRegression()
+
+# Fit the model on the training data
+reg_model.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred = reg_model.predict(X_test)
+
+# Evaluate the model using R-squared
+r_squared = r2_score(y_test, y_pred)
+print("R-squared (single split):", r_squared)
+
+# Perform 5-fold cross-validation
+cv_scores = cross_val_score(reg_model, X_pca, y, cv=5, scoring='r2')
+print("R-squared (cross-validation):", cv_scores)
+
+# Calculate the average R-squared across all folds
+mean_r_squared = np.mean(cv_scores)
+print("Mean R-squared (cross-validation):", mean_r_squared)
+
+```
+
+### Random Forest Regressor
+
+```{python}
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(
+    X_pca, y, test_size=0.2, random_state=42)
+
+# Create a Random Forest Regressor model
+rf_model = RandomForestRegressor(random_state=42)
+
+# Fit the model on the training data
+rf_model.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred = rf_model.predict(X_test)
+
+# Evaluate the model using R-squared
+r_squared = r2_score(y_test, y_pred)
+print("R-squared (single split):", r_squared)
+
+# Perform 5-fold cross-validation
+cv_scores = cross_val_score(rf_model, X_pca, y, cv=5, scoring='r2')
+print("R-squared (cross-validation):", cv_scores)
+
+# Calculate the average R-squared across all folds
+mean_r_squared = np.mean(cv_scores)
+print("Mean R-squared (cross-validation):", mean_r_squared)
+
+```
+
+### XGBoost Regressor
+
+```{python}
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(
+    X_pca, y, test_size=0.2, random_state=42)
+
+# Create an XGBoost Regressor model
+xgb_model = XGBRegressor(random_state=42)
+
+# Fit the model on the training data
+xgb_model.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred = xgb_model.predict(X_test)
+
+# Evaluate the model using R-squared
+r_squared = r2_score(y_test, y_pred)
+print("R-squared (single split):", r_squared)
+
+# Perform 5-fold cross-validation
+cv_scores = cross_val_score(xgb_model, X_pca, y, cv=5, scoring='r2')
+print("R-squared (cross-validation):", cv_scores)
+
+# Calculate the average R-squared across all folds
+mean_r_squared = np.mean(cv_scores)
+print("Mean R-squared (cross-validation):", mean_r_squared)
+
+```
+
+The 3 models ran above are for 10 principle components, however it might be the case that more components lead to better results. Consequently, it is important to test out how model performances change with respect to the number of components.
+
+## Optimal Number of components
+
+```{python}
+
+
+# Read the data from the CSV file
+df = pd.read_csv("Data/marged_recs.csv")
+
+# Drop irrelevant columns
+df = df.drop(columns=['ELXBTU', 'ZTYPEHUQ', 'MEDICALDEV',
+             'EVCHRGHOME', 'ELOTHER', 'USEEL'])
+
+# Create the target variable 'log_KWH'
+df['log_KWH'] = np.log(df['KWH'])
+
+# Separate numeric and categorical column names
+numeric_columns = []
+categorical_columns = []
+data_types = df.dtypes
+for column_name, data_type in data_types.iteritems():
+    if pd.api.types.is_numeric_dtype(data_type):
+        numeric_columns.append(column_name)
+    else:
+        categorical_columns.append(column_name)
+
+# Drop 'DOEID' from the numeric columns
+numeric_columns.remove('DOEID')
+
+# Get the numeric data
+numeric_df = df[numeric_columns]
+
+# Min-Max scaling for normalization
+
+
+def min_max_scaler(x): return (x - x.min()) / (x.max() - x.min())
+
+
+numeric_df_normalized = numeric_df.apply(min_max_scaler)
+
+# Separate X and y
+X = numeric_df_normalized.drop(columns=['log_KWH']).dropna()
+y = numeric_df_normalized.loc[X.index, 'log_KWH']
+
+# Perform standardization
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Initialize empty lists to store the results
+results = []
+
+# Loop through different number of components
+components = [n for n in range(10, 151, 10)]
+
+for n_components in components:
+    pca = PCA(n_components=n_components)
+    X_pca = pca.fit_transform(X_scaled)
+
+    # Split the data into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_pca, y, test_size=0.2, random_state=42)
+
+    # Create an XGBoost Regressor model
+    xgb_model = XGBRegressor(random_state=42)
+
+    # Fit the model on the training data
+    xgb_model.fit(X_train, y_train)
+
+    # Predict on the test set
+    y_pred = xgb_model.predict(X_test)
+
+    # Evaluate the model using R-squared
+    r_squared = r2_score(y_test, y_pred)
+
+    # Perform 5-fold cross-validation
+    cv_scores = cross_val_score(xgb_model, X_pca, y, cv=5, scoring='r2')
+
+    # Calculate the average R-squared across all folds
+    mean_r_squared = np.mean(cv_scores)
+
+    # Append the results to the list
+    results.append({"Number of Components": n_components,
+                   "Mean R-squared": mean_r_squared})
+
+# Create a DataFrame from the results list
+results_df = pd.DataFrame(results)
+
+results_df
+```
+
+```{python}
+plt.figure(figsize=(10, 6))
+plt.plot(results_df["Number of Components"],
+         results_df["Mean R-squared"], marker='o', linestyle='-')
+plt.xlabel('Number of Components')
+plt.ylabel('Mean R-squared')
+plt.title('PCA Components vs. Mean R-squared')
+plt.grid(False)
+plt.show()
+
+```
+
+It seems like "diminishing returns" of cross validated R squared improvements start showing after 70 principle components, where the performance does not break the 0.825 ceiling, making it the "optimal" number of principle components.
+
+# Hyperparameter Tuning
+
+XGBoost with 70 principle components.
+
+```{python}
+
+n_components = 75
+
+pca = PCA(n_components=n_components)
+X_pca = pca.fit_transform(X_scaled)
+
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(
+    X_pca, y, test_size=0.2, random_state=42)
+
+# Create an XGBoost Regressor model
+xgb_model = XGBRegressor(random_state=42)
+
+# Fit the model on the training data
+xgb_model.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred = xgb_model.predict(X_test)
+
+# Evaluate the model using R-squared
+r_squared = r2_score(y_test, y_pred)
+# print("R-squared (single split):", r_squared)
+
+# Perform 5-fold cross-validation
+cv_scores = cross_val_score(xgb_model, X_pca, y, cv=5, scoring='r2')
+# print("R-squared (cross-validation):", cv_scores)
+
+# Calculate the average R-squared across all folds
+mean_r_squared = np.mean(cv_scores)
+print("Mean R-squared (cross-validation):", mean_r_squared)
+
+
+```
+
+Below is a hyperparameter tuning method on the XGBoost model with 70 components. The hyperparameters being optimized are:
+
+* learning_rate: Learning rate determines the step size at each iteration during the gradient boosting process. A lower learning rate makes the model converge slower but may lead to better generalization, while a higher learning rate can make the model converge faster but could result in overfitting.
+
+* n_estimators: The number of boosting rounds or trees in the ensemble. Increasing the number of estimators can improve the model's performance until it starts to overfit. It's a trade-off between model complexity and computational cost.
+
+* max_depth: The maximum depth of each tree (estimator). It controls how deep the tree can grow during the boosting process. Deeper trees can capture more complex relationships in the data, but they can also lead to overfitting. Setting a reasonable max_depth is essential to avoid overfitting.
+
+```{python}
+
+
+# Define the hyperparameter space you want to search
+param_grid = {
+    'learning_rate': [0.01, 0.05, 0.1],
+    'n_estimators': [100, 200, 300],
+    'max_depth': [3, 5, 7],
+    # Add more hyperparameters to the grid as needed
+}
+
+# Create an XGBoost Regressor model
+xgb_model = XGBRegressor(random_state=42)
+
+# Perform RandomizedSearchCV with 5-fold cross-validation
+random_search = RandomizedSearchCV(
+    xgb_model, param_distributions=param_grid, n_iter=10, cv=5, scoring='r2', random_state=42)
+random_search.fit(X_pca, y)
+
+# Print the best hyperparameters and best R-squared score
+print("Best Hyperparameters:", random_search.best_params_)
+print("Best R-squared:", random_search.best_score_)
+
+
+```
+
+
+There does seem to be a very minimal improvement in cross validated R squared, which ends up being around 0.83
